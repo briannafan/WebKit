@@ -90,7 +90,7 @@ void RemoteRenderBundleEncoder::setPipeline(WebGPUIdentifier renderPipeline)
 
 void RemoteRenderBundleEncoder::setIndexBuffer(WebGPUIdentifier buffer, WebCore::WebGPU::IndexFormat indexFormat, std::optional<WebCore::WebGPU::Size64> offset, std::optional<WebCore::WebGPU::Size64> size)
 {
-    RefPtr convertedBuffer = protectedObjectHeap()->convertBufferFromBacking(buffer).get();
+    auto convertedBuffer = m_objectHeap->convertBufferFromBacking(buffer);
     ASSERT(convertedBuffer);
     if (!convertedBuffer)
         return;
@@ -129,7 +129,7 @@ void RemoteRenderBundleEncoder::drawIndexed(WebCore::WebGPU::Size32 indexCount, 
 
 void RemoteRenderBundleEncoder::drawIndirect(WebGPUIdentifier indirectBuffer, WebCore::WebGPU::Size64 indirectOffset)
 {
-    RefPtr convertedIndirectBuffer = protectedObjectHeap()->convertBufferFromBacking(indirectBuffer).get();
+    auto convertedIndirectBuffer = protectedObjectHeap()->convertBufferFromBacking(indirectBuffer);
     ASSERT(convertedIndirectBuffer);
     if (!convertedIndirectBuffer)
         return;
@@ -139,7 +139,7 @@ void RemoteRenderBundleEncoder::drawIndirect(WebGPUIdentifier indirectBuffer, We
 
 void RemoteRenderBundleEncoder::drawIndexedIndirect(WebGPUIdentifier indirectBuffer, WebCore::WebGPU::Size64 indirectOffset)
 {
-    RefPtr convertedIndirectBuffer = protectedObjectHeap()->convertBufferFromBacking(indirectBuffer).get();
+    auto convertedIndirectBuffer = m_objectHeap->convertBufferFromBacking(indirectBuffer);
     ASSERT(convertedIndirectBuffer);
     if (!convertedIndirectBuffer)
         return;
