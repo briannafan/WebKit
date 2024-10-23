@@ -21,6 +21,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import optparse
+import argparse
 
 
 def upload_options(suite_name_flag='suite'):
@@ -33,3 +34,17 @@ def upload_options(suite_name_flag='suite'):
         optparse.make_option('--result-report-flavor', help='Optional flag for categorizing test runs which do not fit into other configuration options.'),
         optparse.make_option('--' + suite_name_flag, help='Optional flag for overriding reported suite name.', default=None),
     ]
+
+
+def upload_args(suite_name_flag='suite'):
+    parser = argparse.ArgumentParser(add_help=False)
+    upload_options = parser.add_argument_group('Upload options')
+    upload_options.add_argument('--report', action='append', dest='report_urls', help='URL (or URLs) to report test results to')
+    upload_options.add_argument('--buildbot-master', help='The url of the buildbot master.')
+    upload_options.add_argument('--builder-name', help='The name of the buildbot builder tests were run on.')
+    upload_options.add_argument('--build-number', help='The buildbot build number tests are associated with.')
+    upload_options.add_argument('--buildbot-worker', help='The buildbot worker tests were run on.')
+    upload_options.add_argument('--result-report-flavor', help='Optional flag for categorizing test runs which do not fit into other configuration options.')
+    upload_options.add_argument('--' + suite_name_flag, help='Optional flag for overriding reported suite name.', default=None)
+
+    return parser

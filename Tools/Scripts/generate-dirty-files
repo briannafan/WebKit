@@ -27,6 +27,11 @@ import argparse
 import json
 import sys
 
+from webkitpy.results.upload import Upload
+from webkitpy.results.options import upload_args
+from libraries.webkitscmpy.webkitscmpy import Commit
+from libraries.webkitscmpy.webkitscmpy import local, log, remote
+
 CHECKER_MAP = {
     'Member variable is a raw-pointer/reference to reference-countable type': 'NoUncountedMemberChecker',
     'Member variable is a raw-pointer/reference to checked-pointer capable type': 'NoUncheckedPtrMemberChecker',
@@ -39,7 +44,7 @@ PROJECTS = ['WebCore', 'WebKit']
 
 
 def parser():
-    parser = argparse.ArgumentParser(description='Generates files listing new regressions and files per checker type')
+    parser = argparse.ArgumentParser(parents=[upload_args()], description='Generates files listing new regressions and files per checker type')
     parser.add_argument(
         'results_dir',
         help='Path to directory of results to parse'
@@ -56,6 +61,13 @@ def parser():
         help='Path to build directory, used to standardize file paths',
         required=True
     )
+    config_options = parser.add_argument_group('Configuration')
+    config_options.add_argument('--architecture')
+    config_options.add_argument('--platform')
+    config_options.add_argument('--version')
+    config_options.add_argument('--version-name')
+    config_options.add_argument('--style')
+    config_options.add_argument('--sdk')
 
     return parser.parse_args()
 
@@ -89,6 +101,7 @@ def parse_results_file(args, file_path):
 def find_project_results(args, project, file_list, results_data, issue_to_report):
     bug_counts = {}
     files_per_project = {key: set() for key in CHECKER_MAP.values()}
+    project_results_for_upload = {}
 
     for result_file in file_list:
         file_name, issue_hash, bug_type, _ = parse_results_file(args, result_file)
@@ -121,6 +134,12 @@ def find_project_results(args, project, file_list, results_data, issue_to_report
             issue_to_report[CHECKER_MAP[bug_type]] = {}
         issue_to_report[CHECKER_MAP[bug_type]][issue_hash] = result_file
 
+        if not CHECKER_MAP[bug_type] in project_results_for_upload.keys():
+            project_results_for_upload[CHECKER_MAP[bug_type]] = {}
+
+        if not file_name in project_results_for_upload[CHECKER_MAP[bug_type]].keys():
+            project_results_for_upload[CHECKER_MAP[bug_type]][file_name] = {'actual': 'FAIL'}
+
         output_file_name = os.path.abspath(f'{args.output_dir}/{project}/{CHECKER_MAP[bug_type]}Issues')
         with open(output_file_name, 'a') as f:
             f.write(f'{issue_hash}\n')
@@ -135,7 +154,7 @@ def find_project_results(args, project, file_list, results_data, issue_to_report
 
     for type, count in bug_counts.items():
         print(f'    {type}: {count}')
-    return results_data
+    return project_results_for_upload
 
 
 def find_all_results(args):
@@ -143,6 +162,7 @@ def find_all_results(args):
     results_data = {}
     result_counts = {}
     issue_to_report = {}
+    results_for_upload = {}
 
     for project in PROJECTS:
         subprocess.run(['mkdir', os.path.abspath(f'{args.output_dir}/{project}')])
@@ -153,14 +173,15 @@ def find_all_results(args):
         except subprocess.CalledProcessError as e:
             sys.stderr.write(f'{e.output}')
             sys.stderr.write(f'Could not find results for {project}\n')
-            return -1
+            continue
         project_files = result_files.splitlines()
         file_list.extend(project_files)
         result_counts[project] = len(project_files)
 
         print(f'\n------ {project} ------\n')
         print(f'TOTAL ISSUES: {len(project_files)}')
-        find_project_results(args, project, project_files, results_data, issue_to_report)
+        results_for_upload[project] = find_project_results(args, project, project_files, results_data, issue_to_report)
+        print('\n')
 
     print("\nWriting results files...")
     # Checker -> File -> Issue -> Report
@@ -179,6 +200,46 @@ def find_all_results(args):
         results_msg += f'{proj} ({count}) '
     print(results_msg)
 
+    return results_for_upload
+
+
+def upload_results(options, results):
+    print('\nPreparing to upload results...')
+
+    config = Upload.create_configuration(
+        architecture=options.architecture,
+        platform=options.platform,
+        version=options.version,
+        version_name=options.version_name,
+        style=options.style,
+        sdk=options.sdk
+    )
+
+    repo = os.getcwd()
+    if repo.startswith(('https://', 'http://')):
+        repository = remote.Scm.from_url(repo)
+    else:
+        try:
+            repository = local.Scm.from_path(path=repo,)
+        except OSError:
+            log.warning("No repository found at '{}'".format(repo))
+            repository = None
+    commit = repository.commit()
+    commit = commit.Encoder().default(commit)
+    commit['repository_id'] = 'webkit'
+
+    upload = Upload(
+        suite=options.suite or 'safer-cpp-checks',
+        configuration=config,
+        details=Upload.create_details(options=options),
+        commits=[commit],
+        run_stats=Upload.create_run_stats(), results=results,
+    )
+
+    for url in options.report_urls:
+        if not upload.upload(url):
+            sys.stderr.write(f'Failed to upload results\n')
+
 
 def main():
     args = parser()
@@ -188,7 +249,10 @@ def main():
         sys.stderr.write(f'{e.output}\n')
 
     if args.results_dir:
-        find_all_results(args)
+        results_for_upload = find_all_results(args)
+
+    if args.report_urls:
+        upload_results(args, results_for_upload)
 
 
 if __name__ == '__main__':
