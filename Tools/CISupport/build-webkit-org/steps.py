@@ -1710,6 +1710,20 @@ class ParseStaticAnalyzerResults(shell.ShellCommandNewStyle):
         self.command += ['--output-dir', os.path.join(self.getProperty('builddir'), output_dir)]
         self.command += ['--build-dir', os.path.join(self.getProperty('builddir'), 'build')]
 
+        self.command += [
+            '--builder-name', self.getProperty('buildername'),
+            '--build-number', self.getProperty('buildnumber'),
+            '--buildbot-worker', self.getProperty('workername'),
+            '--buildbot-master', DNS_NAME,
+            '--report', RESULTS_WEBKIT_URL,
+            '--architecture', self.getProperty('architecture', ''),
+            '--platform', self.getProperty('platform', ''),
+            '--version', self.getProperty('os_version', ''),
+            '--version-name', self.getProperty('os_name', ''),
+            '--style', self.getProperty('configuration', ''),
+            '--sdk', self.getProperty('build_version', '')
+        ]
+
         self.log_observer = logobserver.BufferLogObserver()
         self.addLogObserver('stdio', self.log_observer)
 
@@ -1994,6 +2008,12 @@ class PrintConfiguration(steps.ShellSequence):
             os_version = match.group(1).strip()
             os_name = self.convert_build_to_os_name(os_version)
             configuration = f'OS: {os_name} ({os_version})'
+            self.setProperty('os_name', os_name)
+            self.setProperty('os_version', os_version)
+        match = re.search('BuildVersion:[ \t]*(.+?)\n', logText)
+        if match:
+            build_version = match.group(1).strip()
+            self.setProperty('build_version', build_version)
 
         xcode_re = sdk_re = 'Xcode[ \t]+?([0-9.]+?)\n'
         match = re.search(xcode_re, logText)

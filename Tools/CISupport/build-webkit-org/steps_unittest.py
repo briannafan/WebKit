@@ -1948,10 +1948,24 @@ class TestParseStaticAnalyzerResults(BuildStepMixinAdditions, unittest.TestCase)
         self.configureStep()
         self.setProperty('builddir', 'wkdir')
         self.setProperty('buildnumber', 1234)
+        self.setProperty('architecture', 'arm64')
+        self.setProperty('platform', 'mac')
+        self.setProperty('os_version', '14.6.1')
+        self.setProperty('os_name', 'Sonoma')
+        self.setProperty('configuration', 'release')
+        self.setProperty('build_version', '23G93')
+        self.setProperty('got_revision', '1234567')
+        self.setProperty('branch', 'main')
+        self.setProperty('buildername', 'Safer-CPP-Checks')
+        self.setProperty('workername', 'bot600')
+
+        command = ['python3', 'Tools/Scripts/generate-dirty-files', f'wkdir/build/{SCAN_BUILD_OUTPUT_DIR}', '--output-dir', 'wkdir/smart-pointer-result-archive/1234', '--build-dir', 'wkdir/build']
+        upload_options = ['--builder-name', 'Safer-CPP-Checks', '--build-number', 1234, '--buildbot-worker', 'bot600', '--buildbot-master', 'mac-422505', '--report', 'https://results.webkit.org']
+        configuration = ['--architecture', 'arm64', '--platform', 'mac', '--version', '14.6.1', '--version-name', 'Sonoma', '--style', 'release', '--sdk', '23G93']
 
         self.expectRemoteCommands(
             ExpectShell(workdir='wkdir',
-                        command=['python3', 'Tools/Scripts/generate-dirty-files', f'wkdir/build/{SCAN_BUILD_OUTPUT_DIR}', '--output-dir', 'wkdir/smart-pointer-result-archive/1234', '--build-dir', 'wkdir/build'])
+                        command=command + upload_options + configuration)
             + ExpectShell.log('stdio', stdout='Total (24247) WebKit (327) WebCore (23920)\n')
             + 0,
         )
