@@ -156,6 +156,8 @@ class CheckOutLLVMProject(git.Git, AddToLogMixin):
     CHECKOUT_DELAY_AND_MAX_RETRIES_PAIR = (0, 2)
     GIT_HASH_LENGTH = 40
     haltOnFailure = False
+    flunkOnFailure = False
+    warnOnFailure = False
 
     def __init__(self, **kwargs):
         repourl = f'{GITHUB_URL}rniwa/llvm-project.git'
