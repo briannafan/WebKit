@@ -26,7 +26,6 @@ css/MediaList.h
 css/PropertySetCSSStyleDeclaration.h
 css/SelectorChecker.h
 css/SelectorFilter.h
-css/ShorthandSerializer.cpp
 css/StyleProperties.h
 css/StyleRuleImport.h
 css/StyleSheetContents.h
@@ -53,6 +52,7 @@ inspector/InspectorStyleSheet.cpp
 inspector/InspectorStyleSheet.h
 inspector/InspectorWebAgentBase.h
 inspector/agents/worker/WorkerAuditAgent.h
+inspector/agents/worker/WorkerWorkerAgent.h
 layout/formattingContexts/inline/InlineItemsBuilder.h
 loader/appcache/ApplicationCacheStorage.cpp
 page/FrameSnapshotting.cpp
