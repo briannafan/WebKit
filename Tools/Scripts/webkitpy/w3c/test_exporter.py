@@ -1,4 +1,4 @@
-# Copyright (c) 2017, Apple Inc. All rights reserved.
+# Copyright (c) 2017-2025 Apple Inc. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -27,17 +27,15 @@
 import argparse
 import logging
 import os
-import json
+import sys
 
-from webkitcorepy import string_utils
-from webkitbugspy import Tracker
-from webkitscmpy import local
+from webkitcorepy import string_utils, run
+from webkitbugspy import Tracker, bugzilla
+from webkitscmpy import local, remote
 
-from webkitpy.common.checkout.scm.git import Git
 from webkitpy.common.host import Host
 from webkitpy.common.net.bugzilla import Bugzilla
 from webkitpy.common.webkit_finder import WebKitFinder
-from webkitpy.w3c.wpt_github import WPTGitHub
 from webkitpy.w3c.wpt_linter import WPTLinter
 from webkitpy.w3c.common import WPT_GH_ORG, WPT_GH_REPO_NAME, WPT_GH_URL, WPTPaths
 from webkitpy.common.memoized import memoized
@@ -54,28 +52,30 @@ EXCLUDED_FILE_SUFFIXES = ['-expected.txt', '-expected.html', '-expected-mismatch
 
 
 class WebPlatformTestExporter(object):
-    def __init__(self, host, options, gitClass=Git, bugzillaClass=Bugzilla, WPTGitHubClass=WPTGitHub, WPTLinterClass=WPTLinter, repository=None):
+    def __init__(self, host, options, bugzillaClass=Bugzilla, WPTLinterClass=WPTLinter):
         self._host = host
         self._filesystem = host.filesystem
         self._options = options
 
         self._host.initialize_scm()
 
-        self._WPTGitHubClass = WPTGitHubClass
-        self._gitClass = gitClass  # FIXME: Move git operations to webkitscmpy
         self._bugzilla = bugzillaClass()
         self._bug_id = options.bug_id
         self._bug = None
-
-        repo_path = WebKitFinder(self._filesystem).webkit_base()
-        self._repository = repository or local.Git(repo_path)
 
         issue = None
         if not self._bug_id:
             if options.attachment_id:
                 self._bug_id = self._bugzilla.bug_id_for_attachment_id(options.attachment_id)  # FIXME: Dependency on webkitpy.bugzilla should be removed when patch workflow is disabled
             elif options.git_commit:
-                self._bug_id = self._host.checkout().bug_id_for_this_commit(options.git_commit)
+                repo_path = WebKitFinder(self._filesystem).webkit_base()
+                self._repository = local.Git(repo_path)
+                commit = self._wk_repo.find(options.git_commit)
+                issue = next((issue for issue in commit.issues if isinstance(issue.tracker, bugzilla.Tracker)), None)
+                if not issue:
+                    _log.error('Unable to find associated bug.')
+                    sys.exit()
+                self._bug_id = issue.id
 
         if Tracker.instance() and (isinstance(self._bug_id, int) or string_utils.decode(self._bug_id).isnumeric()):
             issue = Tracker.instance().issue(int(self._bug_id))
@@ -89,6 +89,11 @@ class WebPlatformTestExporter(object):
             webkit_finder = WebKitFinder(self._filesystem)
             self._options.repository_directory = WPTPaths.wpt_checkout_path(webkit_finder)
 
+        if not self._filesystem.exists(self._options.repository_directory):
+            run([local.Git.executable(), 'clone', f'{WPT_GH_URL}.git', self._options.repository_directory], cwd=os.path.dirname(os.getcwd()))
+        self._wpt_repo = local.Git(self._options.repository_directory)
+
+        self._remote = self._init_wpt_remote()
         self._linter = WPTLinterClass(self._options.repository_directory, host.filesystem)
 
         self._commit_message = options.message
@@ -100,21 +105,8 @@ class WebPlatformTestExporter(object):
         if hasattr(self, '_username'):
             return self._username
 
-        self._ensure_username_and_token(self._options)
+        self._username, _ = self._remote.credentials(required=False)
         return self._username
-
-    @property
-    def token(self):
-        if hasattr(self, '_token'):
-            return self._token
-
-        self._ensure_username_and_token(self._options)
-        return self._token
-
-    @property
-    @memoized
-    def _github(self):
-        return self._WPTGitHubClass(self._host, self.username, self.token) if self.username and self.token else None
 
     @property
     @memoized
@@ -141,11 +133,6 @@ class WebPlatformTestExporter(object):
 
     @property
     @memoized
-    def _git(self):
-        return self._ensure_wpt_repository(f'{WPT_GH_URL}.git', self._options.repository_directory, self._gitClass)
-
-    @property
-    @memoized
     def _branch_name(self):
         return self._ensure_new_branch_name()
 
@@ -164,7 +151,22 @@ class WebPlatformTestExporter(object):
             return ''
         return patch_data
 
+    def _init_wpt_remote(self):
+        source_remote = self._wpt_repo.default_remote
+        if not self._wpt_repo.config().get('remote.{}.url'.format(source_remote)):
+            _log.error("'{}' is not a remote in this repository\n".format(source_remote))
+            return
+        remote = self._wpt_repo.remote(name=source_remote)
+        if not remote:
+            _log.error("'{}' doesn't have a recognized remote\n".format(self._wpt_repo.root_path))
+            return
+        return remote
+
+    def _run_wpt_git(self, commands, capture_output=False):
+        return run([local.Git.executable()] + commands, cwd=self._wpt_repo.path, capture_output=capture_output)
+
     def has_wpt_changes(self):
+        _log.info('Checking for WPT changes')
         return bool(self._wpt_patch)
 
     def _find_filename(self, line):
@@ -212,60 +214,6 @@ class WebPlatformTestExporter(object):
         self._filesystem.write_binary_file(patch_file, patch_data)
         return patch_file
 
-    def _prompt_for_token(self, options):
-        if options.non_interactive:
-            return None
-        return self._host.user.prompt_password('Enter GitHub OAuth token (or empty string to skip creating a pull request): ')
-
-    def _prompt_for_username(self, options):
-        if options.non_interactive:
-            return None
-        return self._host.user.prompt('Enter your GitHub username: ')
-
-    def _ensure_username_and_token(self, options):
-        self._username = options.username
-        if not self._username:
-            # FIXME: Use the keychain to store username and oauth token instead of .git/config
-            self._username = self._git.local_config('github.username').rstrip()
-            if not self._username:
-                self._username = os.environ.get('GITHUB_USERNAME')
-            if not self._username:
-                self._username = self._prompt_for_username(options)
-            if not self._username:
-                raise ValueError("Missing GitHub username, please provide it as a command argument (see help for the command).")
-
-        self._token = options.token
-        if not self._token:
-            self._token = self._git.local_config('github.token').rstrip()
-            if not self._token:
-                self._token = os.environ.get('GITHUB_TOKEN')
-            if not self._token:
-                self._token = self._prompt_for_token(options)
-            if not self._token:
-                _log.info(f"Missing GitHub token, the script will not be able to create a pull request to {WPT_GH_ORG}'s {WPT_GH_REPO_NAME} repository.")
-
-        if self._token:
-            self._validate_and_save_token(self._username, self._token)
-
-    def _validate_and_save_token(self, username, token):
-        url = 'https://api.github.com/user'
-        headers = {'Accept': 'application/vnd.github.v3+json', 'Authorization': f'token {token}'}
-        try:
-            response = self._host.web.request(method='GET', url=url, data=None, headers=headers)
-        except HTTPError:
-            raise Exception("OAuth token is not valid")
-        data = json.load(response)
-        login = data.get('login', None)
-        if login != username:
-            raise Exception(f'OAuth token does not match the provided username. Provided user: {username}, github login: {login}')
-        else:
-            # Username and token are valid. Save them in the git config so we
-            # do not need to ask for them again
-            if not self._git.local_config('github.token'):
-                self._git.set_local_config('github.token', token)
-            if not self._git.local_config('github.username'):
-                self._git.set_local_config('github.username', username)
-
     def _ensure_wpt_repository(self, url, wpt_repository_directory, gitClass):
         if not self._filesystem.exists(wpt_repository_directory):
             _log.info(f'Cloning {url} into {wpt_repository_directory}...')
@@ -273,111 +221,126 @@ class WebPlatformTestExporter(object):
         git = gitClass(wpt_repository_directory, None, executive=self._host.executive, filesystem=self._filesystem)
         return git
 
-    def _fetch_wpt_repository(self):
-        _log.info('Fetching web-platform-tests repository')
-        self._git.fetch()
-
     def _ensure_new_branch_name(self):
         branch_name_prefix = "wpt-export-for-webkit-" + (str(self._bug_id) if self._bug_id else "0")
         branch_name = branch_name_prefix
         counter = 0
-        while self._git.branch_ref_exists(branch_name):
+        branches_for = self._wpt_repo.branches_for()
+        while branch_name in branches_for:
+            # FIXME: If the branch exists, we should give the option to overwrite or rebase.
             branch_name = (f'{branch_name_prefix}-{counter!s}')
             counter = counter + 1
         return branch_name
 
     def clean(self):
         _log.info('Cleaning web-platform-tests master branch')
-        self._git.checkout('master')
-        self._git.reset_hard('origin/master')
+        self._run_wpt_git(['checkout', self._wpt_repo.default_branch])
+        self._run_wpt_git(['reset', '--hard', 'origin/master'])
 
     def create_branch_with_patch(self, patch):
         _log.info('Applying patch to web-platform-tests branch ' + self._branch_name)
         try:
-            self._git.checkout_new_branch(self._branch_name)
+            self._run_wpt_git(['checkout', '-b', self._branch_name])
         except Exception as e:
             _log.warning(e)
-            _log.info("Retrying to create the branch")
-            self._git.delete_branch(self._branch_name)
-            self._git.checkout_new_branch(self._branch_name)
+            _log.info('Retrying to create the branch')
+            if self._run_wpt_git(['show-ref', '--quiet', '--verify', f'refs/heads/{self._branch_name}']):
+                self._run_wpt_git(['branch', '-D', self._branch_name])
+            self._run_wpt_git(['checkout', '-b', self._branch_name])
+
         try:
-            self._git.apply_mail_patch([patch, '-3'])
+            self._run_wpt_git(['apply', '--index', patch, '-3'])
         except Exception as e:
             _log.warning(e)
             return False
-        self._git.commit(['-a', '-m', self._commit_message])
+        if self._run_wpt_git(['commit', '-a', '-m', self._commit_message]).returncode:
+            _log.error('No changes to commit! Exiting...')
+            return False
+        return True
+
+    def set_up_wpt_fork(self):
+        # TODO: Change method of checking if remote exists
+        if self._wpt_fork_remote not in self._wpt_repo.source_remotes(personal=True) and self._run_wpt_git(
+            ['remote', 'add', self._wpt_fork_remote, self._wpt_fork_push_url]
+        ).returncode not in [0, 3]:
+            _log.error("Failed to add '{}' remote\n".format(self._wpt_fork_remote))
+            return
+
+        if self._run_wpt_git(['remote', 'show', self._wpt_fork_remote], capture_output=True).returncode:
+            # FIXME: If a fork doesn't exist, we should create one for the user.
+            _log.error(f'Could not find a fork for {self._wpt_fork_remote}. Please fork WPT before continuing: https://github.com/web-platform-tests/wpt/fork')  # TODO: make this message better, also check this works
+            return
+
+        self._run_wpt_git(['fetch', self._wpt_fork_remote, '--prune'])
         return True
 
     def push_to_wpt_fork(self):
-        self.create_upload_remote_if_needed()
-        _log.info('Pushing branch ' + self._branch_name + " to " + self._git.remote(["get-url", self._wpt_fork_remote]).rstrip())
-        _log.info('This may take some time')
-        self._git.push([self._wpt_fork_remote, self._branch_name + ":" + self._public_branch_name, '-f'])
-        _log.info('Branch available at ' + self._wpt_fork_branch_github_url)
+        _log.info(f'Pushing branch {self._branch_name} to {self._wpt_fork_remote}...')
+        self._run_wpt_git(['push', self._wpt_fork_remote, self._branch_name + ':' + self._public_branch_name, '-f'])
+        _log.info(f'Branch available at {self._wpt_fork_branch_github_url}')
         return True
 
     def make_pull_request(self):
+        pr = None
         if self.has_webkit_test_runner_specific_changes:
             _log.error('Cannot create a WPT PR since it contains webkit test runner specific changes')
             return
 
-        if not self._github:
-            _log.info('Skipping pull request because OAuth token was not provided. You can open the pull request manually using the branch ' + self._wpt_fork_branch_github_url)
-            return
-
-        _log.info('Making pull request')
         title = self._bug.title.replace("[", "\\[").replace("]", "\\]")
         # NOTE: this should contain the exact string "WebKit export" to match the condition in
         # https://github.com/web-platform-tests/wpt-pr-bot/blob/f53e625c4871010277dc68336b340b5cd86e2a10/lib/metadata/index.js#L87
         description = f'WebKit export from bug: [{title}]({self._bug.link})'
-        pr_number = self.create_wpt_pull_request(self._wpt_fork_remote + ':' + self._public_branch_name, self._commit_message, description)
-        if pr_number:
+        pr = self.create_wpt_pull_request(self._wpt_fork_remote + ':' + self._public_branch_name, self._commit_message, description)  # TODO
+        if pr and pr._metadata and pr._metadata.get('issue'):
             try:
-                self._github.add_label(pr_number, WEBKIT_EXPORT_PR_LABEL)
+                pr_issue = pr._metadata['issue']
+                labels = pr_issue.labels
+                labels.append(WEBKIT_EXPORT_PR_LABEL)
+                pr_issue.set_labels(labels)
             except Exception as e:
                 _log.warning(e)
-                _log.info(f'Could not add label "{WEBKIT_EXPORT_PR_LABEL}" to pr #{pr_number}. User "{self.username}" may not have permission to update labels in the {WPT_GH_ORG}/{WPT_GH_REPO_NAME} repo.')
-        if self._bug_id and pr_number:
-            pr_url = f'{WPT_PR_URL}{pr_number}'
-            self._bug.add_related_links([pr_url])
-            self._bug.add_comment(f'Submitted web-platform-tests pull request: {pr_url}')
+                _log.info(f'Could not add label "{WEBKIT_EXPORT_PR_LABEL}" to pr #{pr.number}. User "{self.username}" may not have permission to update labels in the {WPT_GH_ORG}/{WPT_GH_REPO_NAME} repo.')
+        if self._bug_id and pr:
+            self._bug.add_related_links([pr.url])
+            self._bug.add_comment(f'Submitted web-platform-tests pull request: {pr.url}')
+        return pr
 
     def create_wpt_pull_request(self, remote_branch_name, title, body):
-        pr_number = None
-        try:
-            pr_number = self._github.create_pr(remote_branch_name, title, body)
-        except HTTPError as e:
-            if e.code == 422:
-                _log.info(f'Unable to create a new pull request for branch "{remote_branch_name}" because a pull request already exists. The branch has been updated and there is no further action needed.')
-            else:
-                _log.warning(e)
-                _log.info('Error creating a pull request on github. Please ensure that the provided github token has the "public_repo" scope.')
-        except Exception as e:
-            _log.warning(e)
-            _log.info('Error creating a pull request on github. Please ensure that the provided github token has the "public_repo" scope.')
-        return pr_number
+        _log.info(f"\nCreating pull-request for '{remote_branch_name}'...")
+
+        pr = self._remote.pull_requests.create(
+            title=title,
+            body=body,
+            head=self._wpt_repo.branch,
+        )
+        if not pr:
+            sys.stderr.write("Failed to create pull-request for '{}'\n".format(self._wpt_repo.branch))
+            return None
+
+        print("Created '{}'!".format(pr))
+        return pr
 
     def delete_local_branch(self, *, is_success=True):
         if self._options.clean and (is_success or self._options.clean_on_failure):
             _log.info('Removing local branch ' + self._branch_name)
-            self._git.checkout('master')
-            self._git.delete_branch(self._branch_name)
+            self._run_wpt_git(['checkout', self._wpt_repo.default_branch])
+            self._run_wpt_git(['branch', '-D', self._branch_name])
         else:
             _log.info('Keeping local branch ' + self._branch_name)
 
-    def create_upload_remote_if_needed(self):
-        if not self._wpt_fork_remote in self._git.remote([]):
-            self._git.remote(["add", self._wpt_fork_remote, self._wpt_fork_push_url])
-
     def do_export(self):
         git_patch_file = self.write_git_patch_file()
-
         if not git_patch_file:
             _log.error("Unable to create a patch to apply to web-platform-tests repository")
             return
 
-        self._fetch_wpt_repository()
+        _log.info('Fetching web-platform-tests repository')
+        self._run_wpt_git(['fetch', 'origin', '--prune'])
         self.clean()
+
+        if not self.set_up_wpt_fork():
+            self.delete_local_branch(is_success=False)
+            return
 
         if not self.create_branch_with_patch(git_patch_file):
             _log.error(f'Cannot create web-platform-tests local branch from the patch {git_patch_file!r}')
@@ -397,14 +360,15 @@ class WebPlatformTestExporter(object):
         try:
             if self.push_to_wpt_fork():
                 if self._options.create_pull_request:
-                    self.make_pull_request()
+                    pr = self.make_pull_request()
         except Exception:
             self.delete_local_branch(is_success=False)
             raise
         else:
             self.delete_local_branch(is_success=True)
         finally:
-            _log.info("Finished")
+            if pr:
+                _log.info(f'WPT Pull Request: {pr.url}')
 
 
 def parse_args(args):
