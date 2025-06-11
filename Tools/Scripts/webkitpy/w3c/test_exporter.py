@@ -70,7 +70,7 @@ class WebPlatformTestExporter(object):
             elif options.git_commit:
                 repo_path = WebKitFinder(self._filesystem).webkit_base()
                 self._repository = local.Git(repo_path)
-                commit = self._wk_repo.find(options.git_commit)
+                commit = self._repository.find(options.git_commit)
                 issue = next((issue for issue in commit.issues if isinstance(issue.tracker, bugzilla.Tracker)), None)
                 if not issue:
                     _log.error('Unable to find associated bug.')

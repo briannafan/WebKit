@@ -34,6 +34,9 @@ from webkitbugspy import Tracker, radar
 from webkitcorepy import arguments, run, string_utils, Terminal, OutputCapture
 from webkitscmpy import local, log, remote
 
+from webkitpy.w3c.test_exporter import WebPlatformTestExporter, parse_args, configure_logging
+from webkitpy.common.host import Host
+
 
 class PullRequest(Command):
     name = 'pull-request'
@@ -739,6 +742,14 @@ class PullRequest(Command):
 
             if args.open:
                 Terminal.open_url(pr.url)
+
+        log.info('Checking for WPT changes to export...\n')
+        options = parse_args(['--git-commit', commits[0].hash, '--create-pr'])
+        configure_logging()
+        wpt_exporter = WebPlatformTestExporter(Host(), options)
+
+        if wpt_exporter.has_wpt_changes():
+            wpt_exporter.do_export()
 
         if callback:
             return callback(pr)
