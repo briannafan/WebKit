@@ -240,12 +240,22 @@ class WebPlatformTestExporter(object):
             self._run_wpt_git(['checkout', '-b', self._branch_name])
 
         try:
-            self._run_wpt_git(['apply', '--index', patch, '-3'])
+            output = self._run_wpt_git(['apply', '--index', patch, '-3'], capture_output=True)
+            if output.returncode:
+                _log.error(f'Failed to apply patch!')
+                _log.error(f"stdout: {output.stdout.decode('utf-8')}")
+                _log.error(f"stderr: {output.stderr.decode('utf-8')}")
+                return False
         except Exception as e:
             _log.warning(e)
             return False
-        if self._run_wpt_git(['commit', '-a', '-m', self._commit_message]).returncode:
-            _log.error('No changes to commit! Exiting...')
+
+        output = self._run_wpt_git(['commit', '-a', '-m', self._commit_message], capture_output=True)
+        if 'nothing to commit' in output.stdout.decode('utf-8'):
+            _log.info('No changes to commit! Exiting...')
+            self.delete_local_branch(is_success=True)
+            sys.exit(0)
+        elif output.returncode:
             return False
         return True
 
