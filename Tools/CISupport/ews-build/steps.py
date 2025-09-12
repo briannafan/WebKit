@@ -3708,6 +3708,7 @@ class RunJavaScriptCoreTests(shell.Test, AddToLogMixin, ShellMixin):
     flunkOnFailure = True
     jsonFileName = 'jsc_results.json'
     logfiles = {'json': jsonFileName}
+    results_db_log_name = 'results-db'
     command = ['perl', 'Tools/Scripts/run-javascriptcore-tests', '--no-build', '--no-fail-fast', '--json-output={0}'.format(jsonFileName), WithProperties('--%(configuration)s')]
     # We rely on run-jsc-stress-tests to weed out any flaky tests
     command_extra = ['--treat-failing-as-flaky=0.6,10,200']
@@ -3719,6 +3720,9 @@ class RunJavaScriptCoreTests(shell.Test, AddToLogMixin, ShellMixin):
         self.binaryFailures = []
         self.stressTestFailures = []
         self.flaky = {}
+        self.stressTestFailures_filtered = []
+        self.binaryFailures_filtered = []
+        self.preexisting_failures_in_results_db = []
 
     def start(self):
         self.log_observer_json = logobserver.BufferLogObserver()
@@ -3749,8 +3753,17 @@ class RunJavaScriptCoreTests(shell.Test, AddToLogMixin, ShellMixin):
         self.command = self.shell_command(' '.join(quote(str(c)) for c in self.command) + ' 2>&1 | Tools/Scripts/filter-test-logs jsc')
         return super().start()
 
+    @defer.inlineCallbacks
     def evaluateCommand(self, cmd):
         rc = super().evaluateCommand(cmd)
+
+        is_main = self.getProperty('github.base.ref', DEFAULT_BRANCH) == DEFAULT_BRANCH
+        if is_main and (self.stressTestFailures or self.binaryFailures):
+            yield self.filter_failures_using_results_db(self.stressTestFailures, self.binaryFailures)
+            self.setProperty('jsc_stress_test_failures_filtered', sorted(self.stressTestFailures_filtered))
+            self.setProperty('jsc_binary_failures_filtered', sorted(self.binaryFailures_filtered))
+            self.setProperty('results-db_jsc_pre_existing', sorted(self.preexisting_failures_in_results_db))
+
         steps_to_add = [
             GenerateS3URL(
                 f"{self.getProperty('fullPlatform')}-{self.getProperty('architecture')}-{self.getProperty('configuration')}-{self.name}",
@@ -3769,6 +3782,13 @@ class RunJavaScriptCoreTests(shell.Test, AddToLogMixin, ShellMixin):
             message = 'Passed JSC tests'
             self.descriptionDone = message
             self.build.results = SUCCESS
+        elif (self.preexisting_failures_in_results_db and not self.stressTestFailures_filtered and not self.binaryFailures_filtered):
+            message = f"Ignored pre-existing failure: {', '.join(self.preexisting_failures_in_results_db)}"
+            self.descriptionDone = message
+            self.build.results = SUCCESS
+            self.setProperty('build_summary', message)
+            steps_to_add += [ArchiveTestResults(), UploadTestResults(), ExtractTestResults()]
+            self.finished(WARNINGS)
         else:
             steps_to_add += [
                 RevertAppliedChanges(),
@@ -3782,6 +3802,48 @@ class RunJavaScriptCoreTests(shell.Test, AddToLogMixin, ShellMixin):
             ]
         self.build.addStepsAfterCurrentStep(steps_to_add)
         return rc
+
+    @defer.inlineCallbacks
+    def _check_for_preexisting_failures(self, tests, filtered_tests, configuration, identifier, has_commit):
+        for test in tests:
+            data = yield ResultsDatabase.is_test_pre_existing_failure(
+                test, configuration=configuration,
+                commit=identifier if has_commit else None,
+                suite='javascriptcore-tests'
+            )
+            self._addToLog(self.results_db_log_name, f"\n{test}: pass_rate: {data['pass_rate']}, pre-existing-failure={data['is_existing_failure']}\nResponse from results-db: {data['raw_data']}\n{data['logs']}")
+            if data['is_existing_failure']:
+                self.preexisting_failures_in_results_db.append(test)
+                filtered_tests.remove(test)
+            else:
+                self._addToLog(self.results_db_log_name, f'{test} is not a pre-existing failure, continuing with retry...')
+                # Optimization to skip consulting results-db for every failure if we encounter any new failure,
+                # since until there is atleast one failure which is not pre-existing, we will anayways have to continue with retry logic.
+                break
+
+    @defer.inlineCallbacks
+    def filter_failures_using_results_db(self, stress_test_failures, binary_failures):
+        self.stressTestFailures_filtered = stress_test_failures.copy()
+        self.binaryFailures_filtered = binary_failures.copy()
+
+        identifier = self.getProperty('identifier', None)
+        platform = self.getProperty('platform', None)
+        configuration = {}
+        if platform:
+            configuration['platform'] = platform
+        style = self.getProperty('configuration', None)
+        if style and style in ['debug', 'release']:
+            configuration['style'] = style
+
+        self._addToLog(self.results_db_log_name, f'Checking Results database for failing JSC tests. Identifier: {identifier}, configuration: {configuration}')
+        has_commit = False
+        if (stress_test_failures or binary_failures) and identifier:
+            has_commit = yield ResultsDatabase.has_commit(commit=identifier)
+            if not has_commit:
+                self._addToLog(self.results_db_log_name, f"'{identifier}' could not be found on the results database, falling back to tip-of-tree\n")
+
+        yield self._check_for_preexisting_failures(stress_test_failures, self.stressTestFailures_filtered, configuration, identifier, has_commit)
+        yield self._check_for_preexisting_failures(binary_failures, self.binaryFailures_filtered, configuration, identifier, has_commit)
 
     def commandComplete(self, cmd):
         super().commandComplete(cmd)
@@ -3880,6 +3942,7 @@ class AnalyzeJSCTestsResults(buildstep.BuildStep, AddToLogMixin):
     NUM_FAILURES_TO_DISPLAY = 10
 
     def start(self):
+        # TODO: Check if filtered results show up properly
         stress_failures_with_change = set(self.getProperty('jsc_stress_test_failures', []))
         binary_failures_with_change = set(self.getProperty('jsc_binary_failures', []))
         clean_tree_stress_failures = set(self.getProperty('jsc_clean_tree_stress_test_failures', []))
