@@ -61,15 +61,13 @@ def read_credentials(host, credentials_json):
 
 
 class WPTPaths:
-    WPT_CHECKOUT_PATH = "web-platform-tests"
-
     @staticmethod
     def checkout_directory(finder):
         return os.path.dirname(WPTPaths.default_wpt_checkout_path(finder))
 
     @staticmethod
     def default_wpt_checkout_path(finder):
-        return os.path.join(os.path.dirname(finder.webkit_base()), WPTPaths.WPT_CHECKOUT_PATH)
+        return os.path.join(os.path.dirname(finder.webkit_base()), "wpt")
 
     def ensure_wpt_repository(finder, repository_directory=None, *, non_interactive=True):
         if not repository_directory:

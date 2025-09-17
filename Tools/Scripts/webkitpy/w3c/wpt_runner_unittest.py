@@ -24,10 +24,9 @@ import unittest
 
 from webkitpy.common.config.ports_mock import MockPort
 from webkitpy.common.host_mock import MockHost
-from webkitpy.w3c.common import WPTPaths
 from webkitpy.w3c.wpt_runner import WPTRunner, parse_args
 
-WPT_CHECKOUT_PATH = f"/{WPTPaths.WPT_CHECKOUT_PATH}"
+WPT_CHECKOUT_PATH = f"/web-platform-tests"
 
 class WPTRunnerTest(unittest.TestCase):
 

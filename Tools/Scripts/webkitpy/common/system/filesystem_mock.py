@@ -38,7 +38,7 @@ class MockFileSystem(object):
     sep = '/'
     pardir = '..'
 
-    def __init__(self, files=None, dirs=None, cwd='/', module_path='/mock-checkout/Tools/Scripts/'):
+    def __init__(self, files=None, dirs=None, cwd='/'):
         """Initializes a "mock" filesystem that can be used to completely
         stub out a filesystem.
 
@@ -54,7 +54,6 @@ class MockFileSystem(object):
         self.cwd = cwd
         self.dirs = set(dirs or [])
         self.dirs.add(cwd)
-        self.module_path = module_path
         for f in self.files:
             d = self.dirname(f)
             while not d in self.dirs:
@@ -96,7 +95,7 @@ class MockFileSystem(object):
         return home_directory + self.sep + parts[1]
 
     def path_to_module(self, module_name):
-        return self.module_path + module_name.replace('.', '/') + ".py"
+        return "/mock-checkout/Tools/Scripts/" + module_name.replace('.', '/') + ".py"
 
     def chdir(self, path):
         path = self.normpath(path)
